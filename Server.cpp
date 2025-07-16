@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <regex>
+#include <algorithm>
 
 //https://redis.io/docs/latest/operate/oss_and_stack/install/archive/install-redis/install-redis-on-linux/
 // Redis documentation for starting and stopping
@@ -44,25 +45,29 @@ int primary_int_finder(const std::string& str) {
   return stoi(num_str);
 }
 
+// This function is used for taking in RESP protocol commands and parsing them
+// It returns a vector of the commands
 std::vector<std::string> parse(std::string str) {
 
   std::vector<std::string> parsed_commands;
-  int jump = 3 + str.find("\r\n");
-
+  int jump = 3 + str.find("\r\n");              // The jump is rough, but since the RESP protocol is just a pattern
+                                                  // you can just 'jump' from one part to the next since you know how long each part is
+                                                  // The jump is used to navigate the RESP string properly, and tracks the index
   if (str.substr(0, 1) == "*") {
-    int words = primary_int_finder(str);
-    for (int i = 0; i < words; i++) { //should be a while true in case data is longer than 1024
-      // this is assuming that these are all bulk strings with $
-      int current_str_length = primary_int_finder(str.substr(jump));
-      jump = (str.substr(jump)).find("\r\n") + jump + 2;
-      parsed_commands.push_back(str.substr(jump, current_str_length));
-      jump += current_str_length + 2;
+    int words = primary_int_finder(str);          // This find how many elements need to be parsed
+    for (int i = 0; i < words; i++) {             //should be a while true in case data is longer than 1024
+                                                  // this is assuming that these are all bulk strings with $
+
+      int current_str_length = primary_int_finder(str.substr(jump));        // This finds the length of the current word being parsed
+      jump = (str.substr(jump)).find("\r\n") + jump + 2;                     // This sets the proper jump and start index for the word to be parsed
+      parsed_commands.push_back(str.substr(jump, current_str_length));     // This adds the parsed command using the previous two lines
+      jump += current_str_length + 2;                                             // This properly sets the jump for the next word to be parsed
     }
 
     return parsed_commands;
 
   }
-  else {
+  else {                                          // This is for future non-bulk string implementation
     std::cerr << "We don't know you yet" << std::endl;
     return {};
   }
@@ -85,15 +90,17 @@ int resp_check(const std::string& str) {
 // Then it closes the client and ends the function then and there
 void thread_socket(int client_fd) {
 
-  char buffer[1024];
+  char buffer[1024];                                            // Sets how much data can be taken at once
   std::string data;
-  std::map<std::string, std::string> sets;
+  std::map<std::string, std::string> sets;                      // This tracks the sets that are set using SET
 
-  while (true) {            // Outer loop
-    while (true) {          // Inner loop
-      // recv returns 0 at disconnect, -1 at error, and a number of bytes when proper
-      // If the number is higher than 1024 it loops
-      // It stores the received info in buffer
+  while (true) {                                                // Outer loop for handling whole interaction
+
+                                                                // recv returns 0 at disconnect, -1 at error, and a number of bytes when proper
+                                                                // If the number is higher than 1024 it loops
+                                                                // It stores the received info in buffer and adds it to data
+
+    while (true) {                                              // Inner loop for receiving data
       int bytes = recv(client_fd, buffer, sizeof(buffer), 0);
       if (bytes == 0) {
         std::cerr << "Client disconnected" << std::endl;
@@ -109,25 +116,24 @@ void thread_socket(int client_fd) {
       if (resp_check(data) == 1) break;
     }
 
-    // bool echoed = false;
     std::vector<std::string> parsed_commands = parse(data);
 
-    for (int i = 0; i < parsed_commands.size(); i++) {
-      print_literal(parsed_commands[i]);
+    for (int i = 0; i < parsed_commands.size(); i++) {            // This loops through the commands
+                                                                  // It compares the parsed commands to known commands and properly responds
+      print_literal(parsed_commands[i]); // This is for debugging
 
-      // if (echoed) {
-      //   std::string response = "+" + parsed_commands[i] + "\r\n";
-      //   send(client_fd, response.c_str(), response.size(), 0);
-      //   echoed = false;
-      //   break;
-      // }
+      // This is for proper case-insensitive implementation. I'm not worried about actually implementing this
+      // std::string current_command = parsed_commands[i];
+      //
+      // std::transform(std::begin(current_command), std::end(current_command),std::begin(current_command), ::toupper);
+
       if (parsed_commands[i] == "PING") {
         std::string response = "+PONG\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
         break;
       }
 
-      else if (parsed_commands[i] == "ECHO") {
+      else if (parsed_commands[i] == "ECHO") { // Echos next parsed command back into the console
         if (i == parsed_commands.size() - 1) {
           std::string response = "+ERR wrong number of arguments for 'ECHO' command\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
@@ -135,11 +141,10 @@ void thread_socket(int client_fd) {
         }
         std::string response = "+" + parsed_commands[i + 1] + "\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
-        // echoed = false;
         break;
       }
 
-      else if (parsed_commands[i] == "SET") {
+      else if (parsed_commands[i] == "SET") { // Sets a map key using the next command the the one after that as a value
         if (i == parsed_commands.size() - 1 || i == parsed_commands.size() - 2) {
           std::string response = "+ERR wrong number of arguments for 'SET' command\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
@@ -151,7 +156,7 @@ void thread_socket(int client_fd) {
         break;
       }
 
-      else if (parsed_commands[i] == "GET"){
+      else if (parsed_commands[i] == "GET"){ // Prints the value for the next command given, which is a key
         if (i == parsed_commands.size() - 1) {
           std::string response = "+ERR wrong number of arguments for 'GET'\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
