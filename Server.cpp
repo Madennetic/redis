@@ -87,6 +87,7 @@ void thread_socket(int client_fd) {
 
   char buffer[1024];
   std::string data;
+  std::map<std::string, std::string> sets;
 
   while (true) {            // Outer loop
     while (true) {          // Inner loop
@@ -108,26 +109,69 @@ void thread_socket(int client_fd) {
       if (resp_check(data) == 1) break;
     }
 
-    bool echoed = false;
-    for (const std::string& command : parse(data)) {
-      print_literal(command);
+    // bool echoed = false;
+    std::vector<std::string> parsed_commands = parse(data);
 
-      if (echoed) {
-        std::string response = "+" + command + "\r\n";
-        send(client_fd, response.c_str(), response.size(), 0);
-        echoed = false;
-      }
-      else if (command == "PING") {
+    for (int i = 0; i < parsed_commands.size(); i++) {
+      print_literal(parsed_commands[i]);
+
+      // if (echoed) {
+      //   std::string response = "+" + parsed_commands[i] + "\r\n";
+      //   send(client_fd, response.c_str(), response.size(), 0);
+      //   echoed = false;
+      //   break;
+      // }
+      if (parsed_commands[i] == "PING") {
         std::string response = "+PONG\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
+        break;
       }
-      else if (command == "ECHO") {
-        echoed = true;
+
+      else if (parsed_commands[i] == "ECHO") {
+        if (i == parsed_commands.size() - 1) {
+          std::string response = "+ERR wrong number of arguments for 'ECHO' command\r\n";
+          send(client_fd, response.c_str(), response.size(), 0);
+          break;
+        }
+        std::string response = "+" + parsed_commands[i + 1] + "\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
+        // echoed = false;
+        break;
       }
+
+      else if (parsed_commands[i] == "SET") {
+        if (i == parsed_commands.size() - 1 || i == parsed_commands.size() - 2) {
+          std::string response = "+ERR wrong number of arguments for 'SET' command\r\n";
+          send(client_fd, response.c_str(), response.size(), 0);
+          break;
+        }
+        sets[parsed_commands[i + 1]] = parsed_commands[i + 2];
+        std::string response = "+OK\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
+        break;
+      }
+
+      else if (parsed_commands[i] == "GET"){
+        if (i == parsed_commands.size() - 1) {
+          std::string response = "+ERR wrong number of arguments for 'GET'\r\n";
+          send(client_fd, response.c_str(), response.size(), 0);
+          break;
+        }
+        if (sets.count(parsed_commands[i + 1]) <= 0) {
+          std::string response = "$-1\r\n";
+          send(client_fd, response.c_str(), response.size(), 0);
+          break;
+        }
+        std::string response = "$" + std::to_string(sets[parsed_commands[i + 1]].size()) + "\r\n" + sets[parsed_commands[i + 1]] + "\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
+        break;
+      }
+
       else {
         std::cout << "sent" << std::endl;
         std::string response = "+PONG\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
+        break;
       }
     }
 
