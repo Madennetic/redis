@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <regex>
+#include <chrono>
 #include <algorithm>
 
 //https://redis.io/docs/latest/operate/oss_and_stack/install/archive/install-redis/install-redis-on-linux/
@@ -84,6 +85,12 @@ int resp_check(const std::string& str) {
   return -1;
 }
 
+// This function makes strings uppercase
+std::string to_upper(std::string str) {
+  std::transform(std::begin(str), std::end(str),std::begin(str), ::toupper);
+  return str;
+}
+
 // This function is for handling multiple clients at once
 // This function will be a detached thread that runs
 // It receives the client, and loops a response until close/error
@@ -92,7 +99,12 @@ void thread_socket(int client_fd) {
 
   char buffer[1024];                                            // Sets how much data can be taken at once
   std::string data;
-  std::map<std::string, std::string> sets;                      // This tracks the sets that are set using SET
+
+  struct set_info {                                             // Struct for holding the set information (key value, expiry)
+    std::string value;
+    std::chrono::steady_clock::time_point expiry;
+  };
+  std::map<std::string, set_info> sets;                         // This tracks the sets that are set using SET
 
   while (true) {                                                // Outer loop for handling whole interaction
 
@@ -118,62 +130,75 @@ void thread_socket(int client_fd) {
 
     std::vector<std::string> parsed_commands = parse(data);
 
-    for (int i = 0; i < parsed_commands.size(); i++) {            // This loops through the commands
+    for (int i = 0; i < parsed_commands.size(); i++) {            // This loops through the commands (This loop is actually pretty useless, because it will only ever go through the first loop)
                                                                   // It compares the parsed commands to known commands and properly responds
-      print_literal(parsed_commands[i]); // This is for debugging
+      // print_literal(parsed_commands[i]); // This is for debugging
 
-      // This is for proper case-insensitive implementation. I'm not worried about actually implementing this
-      // std::string current_command = parsed_commands[i];
-      //
-      // std::transform(std::begin(current_command), std::end(current_command),std::begin(current_command), ::toupper);
+      // This is for proper case-insensitive implementation
+      std::string current_command = to_upper(parsed_commands[i]);
 
-      if (parsed_commands[i] == "PING") {
+      if (current_command == "PING") {
         std::string response = "+PONG\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
         break;
       }
 
-      else if (parsed_commands[i] == "ECHO") { // Echos next parsed command back into the console
+      else if (current_command == "ECHO") { // Echos next parsed command back into the console
         if (i == parsed_commands.size() - 1) {
           std::string response = "+ERR wrong number of arguments for 'ECHO' command\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
           break;
         }
+
         std::string response = "+" + parsed_commands[i + 1] + "\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
         break;
       }
 
-      else if (parsed_commands[i] == "SET") { // Sets a map key using the next command the the one after that as a value
-        if (i == parsed_commands.size() - 1 || i == parsed_commands.size() - 2) {
+      else if (current_command == "SET") { // Sets a map key using the next command then the one after that as a value
+        if (i == parsed_commands.size() - 1 || i == parsed_commands.size() - 2 || i == parsed_commands.size() - 4) { // 3rd last & 5th last are valid
           std::string response = "+ERR wrong number of arguments for 'SET' command\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
           break;
         }
-        sets[parsed_commands[i + 1]] = parsed_commands[i + 2];
+
+        if (i <= parsed_commands.size() - 5) {       // For two or more command sets
+          if (to_upper(parsed_commands[i + 3]) == "PX") {      // For expiry
+            sets[parsed_commands[i + 1]] = set_info{
+              parsed_commands[i + 2],
+              std::chrono::steady_clock::now() + std::chrono::milliseconds(stoi(parsed_commands[i + 4]))};
+            std::string response = "+OK\r\n";
+            send(client_fd, response.c_str(), response.size(), 0);
+            break;
+          }
+        }
+
+        sets[parsed_commands[i + 1]] = set_info{    // For basic sets with no expiry
+          parsed_commands[i + 2],
+          std::chrono::steady_clock::time_point::max()};
         std::string response = "+OK\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
         break;
       }
 
-      else if (parsed_commands[i] == "GET"){ // Prints the value for the next command given, which is a key
+      else if (current_command == "GET"){ // Prints the value for the next command given, which is a key
         if (i == parsed_commands.size() - 1) {
           std::string response = "+ERR wrong number of arguments for 'GET'\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
           break;
         }
-        if (sets.count(parsed_commands[i + 1]) <= 0) {
-          std::string response = "$-1\r\n";
+        
+        if (sets.count(parsed_commands[i + 1]) > 0 && sets[parsed_commands[i + 1]].expiry > std::chrono::steady_clock::now()) { // Checks it's valid and then gets
+          std::string response = "$" + std::to_string(sets[parsed_commands[i + 1]].value.size()) + "\r\n" + sets[parsed_commands[i + 1]].value + "\r\n";
           send(client_fd, response.c_str(), response.size(), 0);
           break;
         }
-        std::string response = "$" + std::to_string(sets[parsed_commands[i + 1]].size()) + "\r\n" + sets[parsed_commands[i + 1]] + "\r\n";
+        std::string response = "$-1\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
         break;
       }
 
       else {
-        std::cout << "sent" << std::endl;
         std::string response = "+PONG\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
         break;
